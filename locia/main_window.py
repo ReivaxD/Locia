@@ -25,6 +25,7 @@ from .ollama_client import OllamaClient
 from .chat_worker import ChatWorker
 from .file_utils import read_text_file
 from . import memory_manager
+from . import template_manager
 
 
 class MainWindow(QMainWindow):
@@ -39,6 +40,8 @@ class MainWindow(QMainWindow):
         self.pending_attachment: str | None = None  # contenu du fichier joint, en attente d'envoi
         self.pending_attachment_name: str | None = None
         self.current_conversation_path = None  # fichier .txt de la conversation en cours
+        self.active_template_name: str | None = None  # nom du template actif, si un est appliqué
+        self.active_template_path = None  # chemin du fichier template actif
 
         self._build_ui()
         self._load_models()
@@ -66,7 +69,16 @@ class MainWindow(QMainWindow):
         self.history_button.clicked.connect(self._open_history)
         top_bar.addWidget(self.history_button)
 
+        self.template_button = QPushButton("📋 Modèles")
+        self.template_button.clicked.connect(self._open_templates)
+        top_bar.addWidget(self.template_button)
+
         layout.addLayout(top_bar)
+
+        self.active_template_label = QLabel("")
+        self.active_template_label.setStyleSheet("color: #3a6; font-style: italic;")
+        self.active_template_label.setVisible(False)
+        layout.addWidget(self.active_template_label)
 
         # Zone d'affichage de la conversation
         self.chat_display = QTextEdit()
@@ -119,11 +131,18 @@ class MainWindow(QMainWindow):
                 "ollama pull qwen2.5:7b",
             )
 
-    def _new_conversation(self):
+    def _new_conversation(self, keep_template: bool = False):
         self.messages = []
         self.current_conversation_path = None
         self.chat_display.clear()
         self._clear_attachment()
+        if not keep_template:
+            self._set_active_template(None, None)
+        elif self.active_template_path and self.active_template_path.exists():
+            # On réapplique le system prompt du template en tête de la nouvelle conversation
+            self.messages.append(
+                {"role": "system", "content": template_manager.load_template(self.active_template_path)}
+            )
 
     def _open_history(self):
         conversations = memory_manager.list_conversations()
@@ -203,6 +222,122 @@ class MainWindow(QMainWindow):
             else:
                 self._append_chat(f"<b>Locia :</b> {self._text_to_safe_html(msg['content'])}")
                 self.chat_display.append("")
+
+    def _set_active_template(self, name: str | None, path):
+        self.active_template_name = name
+        self.active_template_path = path
+        if name:
+            self.active_template_label.setText(f"📋 Modèle actif : {name}")
+            self.active_template_label.setVisible(True)
+        else:
+            self.active_template_label.setVisible(False)
+
+    def _open_templates(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Gestion des modèles de situation")
+        dialog.resize(500, 400)
+        layout = QVBoxLayout(dialog)
+
+        list_widget = QListWidget()
+
+        def refresh_list():
+            list_widget.clear()
+            for path, name in template_manager.list_templates():
+                item = QListWidgetItem(name)
+                item.setData(Qt.ItemDataRole.UserRole, path)
+                list_widget.addItem(item)
+
+        refresh_list()
+        layout.addWidget(list_widget)
+
+        buttons_row = QHBoxLayout()
+        new_button = QPushButton("➕ Nouveau")
+        edit_button = QPushButton("✏️ Modifier")
+        apply_button = QPushButton("✅ Appliquer")
+        delete_button = QPushButton("🗑️ Supprimer")
+        for b in (new_button, edit_button, apply_button, delete_button):
+            buttons_row.addWidget(b)
+        layout.addLayout(buttons_row)
+
+        def edit_template(existing_path=None, existing_name=""):
+            name, ok = QInputDialog.getText(dialog, "Nom du modèle", "Nom :", text=existing_name)
+            if not ok or not name.strip():
+                return
+            existing_content = template_manager.load_template(existing_path) if existing_path else ""
+            content, ok = QInputDialog.getMultiLineText(
+                dialog,
+                "Contenu du modèle",
+                "Décris la situation / le rôle que Locia doit adopter :",
+                existing_content,
+            )
+            if not ok:
+                return
+
+            # Si on renomme, on supprime l'ancien fichier pour éviter les doublons
+            if existing_path and existing_path.stem != name.strip():
+                template_manager.delete_template(existing_path)
+
+            template_manager.save_template(name.strip(), content)
+            refresh_list()
+
+        def do_new():
+            edit_template()
+
+        def do_edit():
+            item = list_widget.currentItem()
+            if item is None:
+                return
+            path = item.data(Qt.ItemDataRole.UserRole)
+            edit_template(existing_path=path, existing_name=item.text())
+
+        def do_apply():
+            item = list_widget.currentItem()
+            if item is None:
+                return
+            path = item.data(Qt.ItemDataRole.UserRole)
+            name = item.text()
+
+            if self.messages:
+                confirm = QMessageBox.question(
+                    dialog,
+                    "Nouvelle conversation requise",
+                    "Appliquer un modèle démarre une nouvelle conversation.\nContinuer ?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                )
+                if confirm != QMessageBox.StandardButton.Yes:
+                    return
+
+            self._new_conversation(keep_template=False)
+            self._set_active_template(name, path)
+            self.messages.append({"role": "system", "content": template_manager.load_template(path)})
+            dialog.accept()
+
+        def do_delete():
+            item = list_widget.currentItem()
+            if item is None:
+                return
+            path = item.data(Qt.ItemDataRole.UserRole)
+            confirm = QMessageBox.question(
+                dialog,
+                "Confirmer la suppression",
+                f"Supprimer définitivement le modèle « {item.text()} » ?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if confirm != QMessageBox.StandardButton.Yes:
+                return
+
+            template_manager.delete_template(path)
+            if self.active_template_path == path:
+                self._set_active_template(None, None)
+            refresh_list()
+
+        new_button.clicked.connect(do_new)
+        edit_button.clicked.connect(do_edit)
+        apply_button.clicked.connect(do_apply)
+        delete_button.clicked.connect(do_delete)
+        list_widget.itemDoubleClicked.connect(lambda _: do_apply())
+
+        dialog.exec()
 
     def _attach_file(self):
         path, _ = QFileDialog.getOpenFileName(

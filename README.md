@@ -31,11 +31,13 @@ Locia/
 ├── run.py                    # point d'entrée
 ├── requirements.txt
 ├── memoire/                  # conversations sauvegardées (.txt), créé automatiquement
+├── template/                 # modèles de situation (.txt), créé automatiquement
 └── locia/
     ├── ollama_client.py       # communication HTTP avec Ollama (streaming)
     ├── chat_worker.py         # thread Qt pour ne pas bloquer l'UI pendant la génération
     ├── file_utils.py          # lecture de fichiers texte/code à joindre
     ├── memory_manager.py       # sauvegarde et reprise des conversations
+    ├── template_manager.py     # gestion des modèles de situation
     └── main_window.py         # interface graphique (PySide6)
 ```
 

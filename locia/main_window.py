@@ -45,6 +45,23 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._load_models()
+        self._verify_storage_dirs()
+
+    def _verify_storage_dirs(self):
+        """Vérifie au démarrage que les dossiers memoire/ et template/ sont créables,
+        et affiche une erreur claire plutôt que de planter silencieusement plus tard."""
+        try:
+            memoire_dir = memory_manager.get_memoire_dir()
+            template_dir = template_manager.get_template_dir()
+        except OSError as e:
+            QMessageBox.critical(
+                self,
+                "Impossible de créer les dossiers de sauvegarde",
+                f"Erreur : {e}\n\n"
+                f"Locia n'a pas les droits d'écriture à cet emplacement.\n"
+                f"Déplace Locia.exe vers un dossier où tu as les droits d'écriture "
+                f"(ex. Bureau, Documents), en dehors de 'Program Files'.",
+            )
 
     # ---------- UI ----------
 
@@ -164,8 +181,10 @@ class MainWindow(QMainWindow):
 
         buttons_row = QHBoxLayout()
         resume_button = QPushButton("Reprendre")
+        rename_button = QPushButton("✏️ Renommer")
         delete_button = QPushButton("🗑️ Supprimer")
         buttons_row.addWidget(resume_button)
+        buttons_row.addWidget(rename_button)
         buttons_row.addWidget(delete_button)
         layout.addLayout(buttons_row)
 
@@ -201,7 +220,27 @@ class MainWindow(QMainWindow):
             if list_widget.count() == 0:
                 dialog.accept()
 
+        def do_rename():
+            item = list_widget.currentItem()
+            if item is None:
+                return
+            path = item.data(Qt.ItemDataRole.UserRole)
+            current_title = memory_manager.get_conversation_title(path) or ""
+            new_title, ok = QInputDialog.getText(
+                dialog, "Renommer la conversation", "Nouveau nom :", text=current_title
+            )
+            if not ok or not new_title.strip():
+                return
+
+            memory_manager.set_conversation_title(path, new_title)
+
+            # Rafraîchit le libellé affiché sans reconstruire toute la liste
+            conversations = memory_manager.list_conversations()
+            new_label = next((label for p, label in conversations if p == path), item.text())
+            item.setText(new_label)
+
         resume_button.clicked.connect(do_resume)
+        rename_button.clicked.connect(do_rename)
         delete_button.clicked.connect(do_delete)
         list_widget.itemDoubleClicked.connect(lambda _: do_resume())
 
@@ -412,9 +451,15 @@ class MainWindow(QMainWindow):
         if self.current_conversation_path is None:
             self.current_conversation_path = memory_manager.new_conversation_path()
         last_user_msg = self.messages[-2]["content"]  # message user juste avant cette réponse
-        memory_manager.append_exchange(
-            self.current_conversation_path, last_user_msg, full_text
-        )
+        try:
+            memory_manager.append_exchange(
+                self.current_conversation_path, last_user_msg, full_text
+            )
+        except OSError as e:
+            QMessageBox.warning(
+                self, "Sauvegarde impossible",
+                f"Cet échange n'a pas pu être sauvegardé : {e}",
+            )
 
     def _on_error(self, error_text: str):
         QMessageBox.critical(self, "Erreur", error_text)

@@ -6,16 +6,27 @@ Chaque template = un fichier .txt contenant le texte du "system prompt"
 """
 
 import re
+import sys
 from pathlib import Path
+
+
+def _get_project_root() -> Path:
+    """
+    Retourne le dossier racine du projet.
+    - En exécution normale (python run.py) : dossier parent du package 'locia/'.
+    - En exécutable PyInstaller (--onefile) : dossier où se trouve le .exe.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
 
 
 def get_template_dir() -> Path:
     """
-    Retourne le dossier 'template/' situé à la racine du projet
-    (au même niveau que 'locia/' et 'memoire/'), et le crée s'il n'existe pas.
+    Retourne le dossier 'template/' situé à la racine du projet (ou à côté du .exe),
+    et le crée s'il n'existe pas.
     """
-    project_root = Path(__file__).resolve().parent.parent  # remonte de locia/ vers Locia/
-    template_dir = project_root / "template"
+    template_dir = _get_project_root() / "template"
     template_dir.mkdir(exist_ok=True)
     return template_dir
 

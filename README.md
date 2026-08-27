@@ -27,12 +27,15 @@ python run.py
 ## Structure du projet
 
 ```
-locia/
+Locia/
 ├── run.py                    # point d'entrée
 ├── requirements.txt
+├── memoire/                  # conversations sauvegardées (.txt), créé automatiquement
 └── locia/
     ├── ollama_client.py       # communication HTTP avec Ollama (streaming)
     ├── chat_worker.py         # thread Qt pour ne pas bloquer l'UI pendant la génération
+    ├── file_utils.py          # lecture de fichiers texte/code à joindre
+    ├── memory_manager.py       # sauvegarde et reprise des conversations
     └── main_window.py         # interface graphique (PySide6)
 ```
 

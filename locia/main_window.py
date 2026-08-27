@@ -1,4 +1,5 @@
 import sys
+import html
 
 from PySide6.QtWidgets import (
     QApplication,
@@ -13,12 +14,17 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QFileDialog,
+    QInputDialog,
+    QDialog,
+    QListWidget,
+    QListWidgetItem,
 )
 from PySide6.QtCore import Qt
 
 from .ollama_client import OllamaClient
 from .chat_worker import ChatWorker
 from .file_utils import read_text_file
+from . import memory_manager
 
 
 class MainWindow(QMainWindow):
@@ -32,6 +38,7 @@ class MainWindow(QMainWindow):
         self.worker: ChatWorker | None = None
         self.pending_attachment: str | None = None  # contenu du fichier joint, en attente d'envoi
         self.pending_attachment_name: str | None = None
+        self.current_conversation_path = None  # fichier .txt de la conversation en cours
 
         self._build_ui()
         self._load_models()
@@ -50,6 +57,15 @@ class MainWindow(QMainWindow):
         self.refresh_button = QPushButton("Rafraîchir")
         self.refresh_button.clicked.connect(self._load_models)
         top_bar.addWidget(self.refresh_button)
+
+        self.new_conv_button = QPushButton("🆕 Nouvelle conversation")
+        self.new_conv_button.clicked.connect(self._new_conversation)
+        top_bar.addWidget(self.new_conv_button)
+
+        self.history_button = QPushButton("📂 Historique")
+        self.history_button.clicked.connect(self._open_history)
+        top_bar.addWidget(self.history_button)
+
         layout.addLayout(top_bar)
 
         # Zone d'affichage de la conversation
@@ -103,6 +119,91 @@ class MainWindow(QMainWindow):
                 "ollama pull qwen2.5:7b",
             )
 
+    def _new_conversation(self):
+        self.messages = []
+        self.current_conversation_path = None
+        self.chat_display.clear()
+        self._clear_attachment()
+
+    def _open_history(self):
+        conversations = memory_manager.list_conversations()
+        if not conversations:
+            QMessageBox.information(self, "Historique", "Aucune conversation sauvegardée pour l'instant.")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Historique des conversations")
+        dialog.resize(450, 350)
+        layout = QVBoxLayout(dialog)
+
+        list_widget = QListWidget()
+        for path, label in conversations:
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, path)
+            list_widget.addItem(item)
+        layout.addWidget(list_widget)
+
+        buttons_row = QHBoxLayout()
+        resume_button = QPushButton("Reprendre")
+        delete_button = QPushButton("🗑️ Supprimer")
+        buttons_row.addWidget(resume_button)
+        buttons_row.addWidget(delete_button)
+        layout.addLayout(buttons_row)
+
+        def do_resume():
+            item = list_widget.currentItem()
+            if item is None:
+                return
+            path = item.data(Qt.ItemDataRole.UserRole)
+            dialog.accept()
+            self._load_conversation(path)
+
+        def do_delete():
+            item = list_widget.currentItem()
+            if item is None:
+                return
+            path = item.data(Qt.ItemDataRole.UserRole)
+            confirm = QMessageBox.question(
+                dialog,
+                "Confirmer la suppression",
+                f"Supprimer définitivement cette conversation ?\n\n{item.text()}",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if confirm != QMessageBox.StandardButton.Yes:
+                return
+
+            memory_manager.delete_conversation(path)
+
+            # Si la conversation supprimée est celle actuellement ouverte, on repart à zéro
+            if self.current_conversation_path == path:
+                self._new_conversation()
+
+            list_widget.takeItem(list_widget.row(item))
+            if list_widget.count() == 0:
+                dialog.accept()
+
+        resume_button.clicked.connect(do_resume)
+        delete_button.clicked.connect(do_delete)
+        list_widget.itemDoubleClicked.connect(lambda _: do_resume())
+
+        dialog.exec()
+
+    def _text_to_safe_html(self, text: str) -> str:
+        """Échappe le HTML et convertit les retours à la ligne en <br> pour un affichage fidèle."""
+        return html.escape(text).replace("\n", "<br>")
+
+    def _load_conversation(self, path):
+        self.messages = memory_manager.load_conversation(path)
+        self.current_conversation_path = path
+        self.chat_display.clear()
+
+        for msg in self.messages:
+            if msg["role"] == "user":
+                self._append_chat(f"<b>Toi :</b> {self._text_to_safe_html(msg['content'])}")
+            else:
+                self._append_chat(f"<b>Locia :</b> {self._text_to_safe_html(msg['content'])}")
+                self.chat_display.append("")
+
     def _attach_file(self):
         path, _ = QFileDialog.getOpenFileName(
             self,
@@ -139,17 +240,19 @@ class MainWindow(QMainWindow):
 
         # Ce que le modèle reçoit inclut le fichier joint ; l'affichage chat reste épuré
         content_for_model = text
+        safe_text = self._text_to_safe_html(text)
         if self.pending_attachment:
             content_for_model = f"{self.pending_attachment}\n\n{text}".strip()
-            self._append_chat(f"<b>Toi :</b> {text} <i>[📎 {self.pending_attachment_name}]</i>")
+            self._append_chat(f"<b>Toi :</b> {safe_text} <i>[📎 {html.escape(self.pending_attachment_name)}]</i>")
         else:
-            self._append_chat(f"<b>Toi :</b> {text}")
+            self._append_chat(f"<b>Toi :</b> {safe_text}")
 
         self.messages.append({"role": "user", "content": content_for_model})
         self.input_field.clear()
         self._clear_attachment()
 
         self._set_input_enabled(False)
+        self.chat_display.append("")  # force un saut de ligne avant la réponse
         self._append_chat("<b>Locia :</b> ", newline=False)
 
         self.worker = ChatWorker(self.client, model, self.messages)
@@ -169,6 +272,14 @@ class MainWindow(QMainWindow):
         self.messages.append({"role": "assistant", "content": full_text})
         self.chat_display.append("")  # saut de ligne pour le prochain échange
         self._set_input_enabled(True)
+
+        # Sauvegarde de l'échange dans le fichier de la conversation en cours
+        if self.current_conversation_path is None:
+            self.current_conversation_path = memory_manager.new_conversation_path()
+        last_user_msg = self.messages[-2]["content"]  # message user juste avant cette réponse
+        memory_manager.append_exchange(
+            self.current_conversation_path, last_user_msg, full_text
+        )
 
     def _on_error(self, error_text: str):
         QMessageBox.critical(self, "Erreur", error_text)
